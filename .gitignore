@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+*.db
+mosquitto/data/
+.pio/
+*.pt
+*.onnx
+*.weights
+datasets/
+data/images/
