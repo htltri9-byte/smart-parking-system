@@ -1,4 +1,5 @@
 .env
+/firmware/gate_in/include/config.h
 __pycache__/
 *.pyc
 .venv/
