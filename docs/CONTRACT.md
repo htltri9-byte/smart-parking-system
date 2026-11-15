@@ -38,7 +38,15 @@ Thời gian `ts` là Unix epoch (giây, số thực). Payload là JSON UTF-8.
 - `WS /ws` đẩy JSON: `{"type":"slot_update","slot":{...}}`, `{"type":"event","topic":"...","payload":{...}}`
 
 ### ALPR (cổng 8001), giai đoạn 3
-- `POST /recognize` (multipart, trường `image`) trả `{"plate":"29B-12345","confidence":0.91,"ms":320}`
+- `POST /recognize` (multipart, trường `image`) trả
+  `{"plate":"29B-12345","confidence":0.91,"valid":true,"ms":320}`
+  - `plate`: biển đã chuẩn hoá dạng `XXy-NNNNN`, hoặc **`null`** khi không đọc được biển hợp lệ.
+  - `valid`: `true` khi `plate` khớp mẫu biển Việt Nam (ô tô hoặc xe máy), ngược lại `false`.
+  - `confidence`: 0–1 (độ tin cậy OCR của lần đọc dùng để ra kết quả; `0.0` nếu không có).
+  - `ms`: thời gian xử lý (mili giây, số nguyên).
+  - Không đọc được biển **vẫn trả HTTP 200** với `plate: null, valid: false`; chỉ trả `400`
+    khi body không phải ảnh (không giải mã được).
+  - Thêm `?debug=true` để nhận thêm trường `raw` (chữ OCR thô) — dùng khi gỡ lỗi, không dùng trong luồng thật.
 
 ### Capture agent (cổng 8002, chạy trên máy host), giai đoạn 4
 - `GET /capture` trả ảnh JPEG chụp từ USB camera
