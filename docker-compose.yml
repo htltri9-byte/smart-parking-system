@@ -34,6 +34,18 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  alpr:
+    build: ./alpr
+    ports:
+      - "8001:8001"
+    environment:
+      OCR_ENGINE: ${OCR_ENGINE:-rapidocr}
+      PLATE_DETECTOR: ${PLATE_DETECTOR:-roi}
+      ROI: ${ROI:-}
+      YOLO_WEIGHTS: ${YOLO_WEIGHTS:-}
+      MIN_PLATE_WIDTH: ${MIN_PLATE_WIDTH:-480}
+    restart: unless-stopped
+
 volumes:
   mosquitto_data:
   pg_data:
