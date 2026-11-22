@@ -9,6 +9,7 @@ import paho.mqtt.client as mqtt
 
 from .config import settings
 from .db import SessionLocal
+from .gate_flow import GateFlow
 from .models import Event, Slot, utcnow
 from .ws import manager
 
@@ -52,14 +53,17 @@ class MqttBridge:
         self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
         self.client.reconnect_delay_set(min_delay=1, max_delay=30)
+        self.gate = GateFlow(self)
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
         # connect_async để backend vẫn khởi động được khi broker chưa sẵn sàng
         self.client.connect_async(settings.mqtt_host, settings.mqtt_port, keepalive=30)
         self.client.loop_start()
+        self.gate.start()
 
     def stop(self) -> None:
+        self.gate.stop()
         self.client.loop_stop()
         self.client.disconnect()
 
@@ -108,6 +112,7 @@ class MqttBridge:
         if slot_data is not None:
             self._broadcast({"type": "slot_update", "slot": slot_data})
         self._broadcast({"type": "event", "topic": topic, "payload": payload})
+        self.gate.submit(topic, payload)
 
     def _upsert_slot(self, db, slot_id_text: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         try:

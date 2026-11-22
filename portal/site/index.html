@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bãi xe thông minh - Bảng điều khiển</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Bãi xe thông minh</h1>
+        <p class="sub">Bảng điều khiển thời gian thực</p>
+      </div>
+      <div class="conn" title="Kết nối WebSocket tới backend">
+        <span id="connDot" class="dot"></span>
+        <span id="connText">Đang kết nối…</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="stats" aria-label="Thống kê">
+        <article class="stat">
+          <span class="stat-label">Ô trống</span>
+          <strong id="statFree">–</strong>
+          <span class="stat-hint">trên <span id="statTotal">4</span> ô</span>
+        </article>
+        <article class="stat">
+          <span class="stat-label">Xe đang gửi</span>
+          <strong id="statInside">–</strong>
+        </article>
+        <article class="stat">
+          <span class="stat-label">Phiên đang hiển thị</span>
+          <strong id="statSessions">–</strong>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Trạng thái ô đỗ</h2>
+        </div>
+        <div id="slotGrid" class="slot-grid"></div>
+        <p id="slotsEmpty" class="empty" hidden>Chưa có dữ liệu ô đỗ.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Lịch sử phiên</h2>
+          <input
+            id="plateSearch"
+            type="search"
+            placeholder="Tìm biển số…"
+            aria-label="Tìm biển số"
+            autocomplete="off"
+          />
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Biển số</th>
+                <th>Vào</th>
+                <th>Ra</th>
+                <th>Trạng thái</th>
+                <th>Tin cậy</th>
+              </tr>
+            </thead>
+            <tbody id="sessionRows"></tbody>
+          </table>
+        </div>
+        <p id="sessionsEmpty" class="empty" hidden>Chưa có phiên nào.</p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Smart Parking · HUTECH</span>
+      <span id="lastUpdate">Chưa cập nhật</span>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
