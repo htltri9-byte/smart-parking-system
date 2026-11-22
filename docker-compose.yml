@@ -27,6 +27,8 @@ services:
     env_file: .env
     ports:
       - "8000:8000"
+    volumes:
+      - ./data/images:/app/data/images
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,6 +46,17 @@ services:
       ROI: ${ROI:-}
       YOLO_WEIGHTS: ${YOLO_WEIGHTS:-}
       MIN_PLATE_WIDTH: ${MIN_PLATE_WIDTH:-480}
+    restart: unless-stopped
+
+  portal:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./portal/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./portal/site:/usr/share/nginx/html:ro
+    depends_on:
+      - backend
     restart: unless-stopped
 
 volumes:
