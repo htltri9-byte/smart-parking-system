@@ -11,6 +11,7 @@ from .config import settings
 from .db import SessionLocal
 from .gate_flow import GateFlow
 from .models import Event, Slot, utcnow
+from .traces import recorder as trace_recorder
 from .ws import manager
 
 log = logging.getLogger("mqtt")
@@ -61,9 +62,11 @@ class MqttBridge:
         self.client.connect_async(settings.mqtt_host, settings.mqtt_port, keepalive=30)
         self.client.loop_start()
         self.gate.start()
+        trace_recorder.start()
 
     def stop(self) -> None:
         self.gate.stop()
+        trace_recorder.stop()
         self.client.loop_stop()
         self.client.disconnect()
 
@@ -108,6 +111,11 @@ class MqttBridge:
             if len(parts) == 4 and parts[1] == "slot" and parts[3] == "state":
                 slot_data = self._upsert_slot(db, parts[2], payload)
             db.commit()
+
+        if len(parts) == 4 and parts[1] == "gate" and parts[3] == "ack":
+            # Ack của barrier (giai đoạn 7): ghép với lượt gần nhất cùng cổng.
+            # Đã subscribe parking/# nên parking/gate/+/ack có sẵn, không cần thêm.
+            trace_recorder.on_ack(parts[2])
 
         if slot_data is not None:
             self._broadcast({"type": "slot_update", "slot": slot_data})

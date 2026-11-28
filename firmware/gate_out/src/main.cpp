@@ -5,6 +5,7 @@
  *   gửi   parking/gate/out/event   {"type":"vehicle_detected","distance_cm":35.2,"ts":...}
  *   gửi   parking/gate/out/passed  {"type":"vehicle_passed","ts":...}
  *   nhận  parking/gate/out/cmd     {"barrier":"open|close","lcd":["dong 1","dong 2"]}
+ *   gửi   parking/gate/out/ack     {"type":"barrier_opened|barrier_closed","ts":...} (sau khi servo quay xong)
  *   gửi   parking/device/gate_out/status  "online" (retained, last will = "offline")
  *
  * Chạy:  pio run -t upload && pio device monitor
@@ -30,6 +31,7 @@ LiquidCrystal_I2C lcd(LCD_I2C_ADDR, 16, 2);
 String topicEvent;
 String topicPassed;
 String topicCmd;
+String topicAck;
 String topicStatus;
 
 // ---- trạng thái ----
@@ -124,9 +126,73 @@ void showOnLcd(const String &line1, const String &line2) {
   lcd.print(line2.substring(0, 16));
 }
 
-void setBarrier(bool open) {
-  barrierServo.write(open ? BARRIER_OPEN_DEG : BARRIER_CLOSED_DEG);
-  Serial.printf("[servo] barrier %s\n", open ? "open" : "close");
+// ---- barrier servo: quay không chặn vòng lặp, gửi ack khi servo quay xong ----
+// Tốc độ quay (độ/giây) và thời gian ổn định sau khi tới góc đích. Có thể khai báo
+// trong config.h để chỉnh theo model; mặc định là SG90 không tải, 0,1 s/60 độ.
+#ifndef SERVO_DEG_PER_SEC
+#define SERVO_DEG_PER_SEC 600.0f
+#endif
+#ifndef SERVO_SETTLE_MS
+#define SERVO_SETTLE_MS 150UL
+#endif
+
+struct Barrier {
+  bool open;          // barrier đã ở góc đích
+  bool moving;        // servo đang quay
+  bool targetOpen;    // góc đích của lần quay hiện tại
+  bool ackPending;    // còn phải gửi ack khi quay xong
+  unsigned long moveStartedMs;
+  unsigned long moveDurationMs;
+};
+
+Barrier barrier = {false, false, false, false, 0, 0};
+
+int barrierAngle(bool open) { return open ? BARRIER_OPEN_DEG : BARRIER_CLOSED_DEG; }
+
+// Thời gian quay ước tính từ chênh lệch góc + thời gian ổn định.
+unsigned long servoDurationMs(int fromDeg, int toDeg) {
+  float speed = SERVO_DEG_PER_SEC > 0 ? SERVO_DEG_PER_SEC : 600.0f;
+  int delta = toDeg > fromDeg ? toDeg - fromDeg : fromDeg - toDeg;
+  return (unsigned long)(delta * 1000.0f / speed) + SERVO_SETTLE_MS;
+}
+
+void publishAck(const char *type) {
+  JsonDocument doc;
+  doc["type"] = type;
+  if (ntpSynced) {
+    doc["ts"] = epochTs();
+  }
+  publishJson(topicAck, doc);
+  Serial.printf("[ack] %s\n", type);
+}
+
+// Ra lệnh quay barrier tới góc mở/đóng. ack chỉ được gửi khi servo quay xong
+// (trong serviceBarrier), không gửi ngay lúc nhận lệnh.
+void moveBarrier(bool open, bool announce) {
+  int fromDeg = barrierAngle(barrier.moving ? barrier.targetOpen : barrier.open);
+  int toDeg = barrierAngle(open);
+  barrier.targetOpen = open;
+  barrier.moving = true;
+  barrier.ackPending = announce;
+  barrier.moveStartedMs = millis();
+  barrier.moveDurationMs = servoDurationMs(fromDeg, toDeg);
+  barrierServo.write(toDeg);
+  Serial.printf("[servo] barrier %s (%d deg, ~%lu ms)\n", open ? "open" : "close", toDeg,
+                barrier.moveDurationMs);
+}
+
+// Gọi mỗi vòng loop(): chốt trạng thái khi servo quay xong rồi mới gửi ack.
+void serviceBarrier(unsigned long now) {
+  if (barrier.moving && now - barrier.moveStartedMs >= barrier.moveDurationMs) {
+    barrier.moving = false;
+    barrier.open = barrier.targetOpen;
+    Serial.printf("[servo] barrier %s xong\n", barrier.open ? "open" : "close");
+  }
+  if (barrier.ackPending && !barrier.moving && mqtt.connected()) {
+    // Mất MQTT đúng lúc quay xong thì giữ ackPending, gửi lại ngay khi kết nối lại.
+    barrier.ackPending = false;
+    publishAck(barrier.open ? "barrier_opened" : "barrier_closed");
+  }
 }
 
 // Xử lý parking/gate/out/cmd: {"barrier":"open","lcd":["29B-12345","Con trong: 3"]}
@@ -137,12 +203,12 @@ void handleCmd(const byte *payload, unsigned int length) {
     return;
   }
 
-  const char *barrier = doc["barrier"];
-  if (barrier != nullptr) {
-    if (strcmp(barrier, "open") == 0) {
-      setBarrier(true);
-    } else if (strcmp(barrier, "close") == 0) {
-      setBarrier(false);
+  const char *cmdBarrier = doc["barrier"];
+  if (cmdBarrier != nullptr) {
+    if (strcmp(cmdBarrier, "open") == 0) {
+      moveBarrier(true, true);
+    } else if (strcmp(cmdBarrier, "close") == 0) {
+      moveBarrier(false, true);
     }
   }
 
@@ -252,6 +318,7 @@ void setup() {
   topicEvent = String(MQTT_PREFIX) + "/gate/out/event";
   topicPassed = String(MQTT_PREFIX) + "/gate/out/passed";
   topicCmd = String(MQTT_PREFIX) + "/gate/out/cmd";
+  topicAck = String(MQTT_PREFIX) + "/gate/out/ack";
   topicStatus = String(MQTT_PREFIX) + "/device/" + DEVICE_ID + "/status";
 
   pinMode(PIN_TRIG_BUMP, OUTPUT);
@@ -268,7 +335,7 @@ void setup() {
   ESP32PWM::allocateTimer(1);
   barrierServo.setPeriodHertz(50);
   barrierServo.attach(PIN_SERVO, SERVO_MIN_US, SERVO_MAX_US);
-  setBarrier(false); // khởi động: barrier đóng
+  moveBarrier(false, false); // khởi động: barrier đóng, không gửi ack
 
   setupWifi();
   setupTime();
@@ -283,6 +350,7 @@ void loop() {
   if (mqtt.connected()) {
     mqtt.loop();
   }
+  serviceBarrier(now);
 
   if (now - lastSampleMs >= SAMPLE_MS) {
     lastSampleMs = now;

@@ -14,17 +14,26 @@ labels.csv: `plate` là biển đúng (dạng 30A-12345 hoặc 30A12345); để 
 không có biển số (khi đó chỉ tính đúng nếu server trả plate = null).
 So sánh sau khi bỏ '-' và '.' và chuyển sang chữ hoa.
 
+Báo cáo thêm (giai đoạn 7):
+- Bảng theo nhóm `note` (sang/toi/lech/2dong/...): số ảnh, tỉ lệ đúng, tỉ lệ hợp lệ,
+  p50/p95 thời gian.
+- Danh sách nhầm lẫn ký tự hay gặp (cặp "ký tự đúng -> ký tự đọc sai").
+- Ghi results/alpr_bench.csv (từng ảnh) và results/alpr_summary.csv (theo nhóm),
+  đồng thời in bảng markdown ra màn hình.
+
 Chỉ dùng `requests` và thư viện chuẩn của Python.
 """
 from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import json
 import math
 import mimetypes
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,6 +64,7 @@ class Outcome:
     raw: str
     match: bool
     error: str = ""
+    note: str = ""
 
 
 def normalize_plate(value: str | None) -> str:
@@ -154,6 +164,164 @@ def is_match(expected: str | None, got: str | None) -> bool:
     return normalize_plate(expected) == normalize_plate(got)
 
 
+NO_NOTE = "(không ghi)"
+
+
+def note_key(note: str) -> str:
+    """Tên nhóm theo cột `note`; note trống gom vào một nhóm riêng."""
+    return note.strip().lower() or NO_NOTE
+
+
+def confusion_pairs(expected: str | None, got: str | None) -> list[tuple[str, str]]:
+    """Cặp (ký tự đúng, ký tự đọc sai) giữa hai biển đã bỏ '-' và '.'.
+
+    Căn hai chuỗi bằng difflib; chỉ lấy các đoạn thay thế (replace), bỏ qua ký tự
+    thừa/thiếu để không báo nhầm thành nhầm lẫn.
+    """
+    if not expected or not got:
+        return []
+    left, right = normalize_plate(expected), normalize_plate(got)
+    matcher = difflib.SequenceMatcher(a=left, b=right, autojunk=False)
+    pairs: list[tuple[str, str]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "replace":
+            continue
+        for offset in range(min(i2 - i1, j2 - j1)):
+            pairs.append((left[i1 + offset], right[j1 + offset]))
+    return pairs
+
+
+@dataclass
+class GroupStat:
+    note: str
+    total: int
+    correct: int
+    valid: int
+    p50: float | None
+    p95: float | None
+
+
+def group_stats(outcomes: list[Outcome]) -> list[GroupStat]:
+    """Gom kết quả theo `note`, nhóm trống xếp cuối."""
+    groups: dict[str, list[Outcome]] = {}
+    for item in outcomes:
+        groups.setdefault(note_key(item.note), []).append(item)
+
+    stats: list[GroupStat] = []
+    for name in sorted(groups, key=lambda key: (key == NO_NOTE, key)):
+        items = groups[name]
+        timings = [float(item.ms) for item in items if item.ms is not None]
+        stats.append(
+            GroupStat(
+                note=name,
+                total=len(items),
+                correct=sum(1 for item in items if item.match),
+                valid=sum(1 for item in items if item.valid),
+                p50=percentile(timings, 50) if timings else None,
+                p95=percentile(timings, 95) if timings else None,
+            )
+        )
+    return stats
+
+
+def confusion_stats(outcomes: list[Outcome]) -> list[tuple[str, str, int]]:
+    """Đếm các cặp nhầm lẫn ký tự, nhiều nhất trước."""
+    counter: Counter[tuple[str, str]] = Counter()
+    for item in outcomes:
+        if item.error or not item.expected or not item.got:
+            continue
+        for pair in confusion_pairs(item.expected, item.got):
+            counter[pair] += 1
+    return [(left, right, count) for (left, right), count in sorted(
+        counter.items(), key=lambda entry: (-entry[1], entry[0])
+    )]
+
+
+def print_group_markdown(stats: list[GroupStat], outcomes: list[Outcome]) -> None:
+    print("| Note | Ảnh | Đọc đúng | Biển hợp lệ | p50 (ms) | p95 (ms) |")
+    print("|---|---:|---:|---:|---:|---:|")
+    for stat in stats:
+        p50 = "—" if stat.p50 is None else f"{stat.p50:.0f}"
+        p95 = "—" if stat.p95 is None else f"{stat.p95:.0f}"
+        print(
+            f"| {stat.note} | {stat.total} | {format_ratio(stat.correct, stat.total)} | "
+            f"{format_ratio(stat.valid, stat.total)} | {p50} | {p95} |"
+        )
+
+    timings = [float(item.ms) for item in outcomes if item.ms is not None]
+    total = len(outcomes)
+    correct = sum(1 for item in outcomes if item.match)
+    valid = sum(1 for item in outcomes if item.valid)
+    p50 = "—" if not timings else f"{percentile(timings, 50):.0f}"
+    p95 = "—" if not timings else f"{percentile(timings, 95):.0f}"
+    print(
+        f"| **Tổng** | {total} | {format_ratio(correct, total)} | "
+        f"{format_ratio(valid, total)} | {p50} | {p95} |"
+    )
+
+
+BENCH_COLUMNS = (
+    "filename",
+    "note",
+    "expected",
+    "got",
+    "match",
+    "valid",
+    "confidence",
+    "ms",
+    "confusions",
+    "raw",
+    "error",
+)
+SUMMARY_COLUMNS = ("note", "n", "correct", "correct_pct", "valid", "valid_pct", "p50_ms", "p95_ms")
+
+
+def write_bench_csv(path: Path, outcomes: list[Outcome]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\r\n")
+        writer.writerow(BENCH_COLUMNS)
+        for item in outcomes:
+            pairs = [] if item.error else confusion_pairs(item.expected, item.got)
+            writer.writerow(
+                [
+                    item.filename,
+                    item.note,
+                    item.expected or "",
+                    item.got or "",
+                    "1" if item.match else "0",
+                    "1" if item.valid else "0",
+                    f"{item.confidence:.3f}",
+                    "" if item.ms is None else item.ms,
+                    "; ".join(f"{left}->{right}" for left, right in pairs),
+                    item.raw,
+                    item.error,
+                ]
+            )
+
+
+def write_summary_csv(path: Path, stats: list[GroupStat]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\r\n")
+        writer.writerow(SUMMARY_COLUMNS)
+        for stat in stats:
+            correct_pct = f"{stat.correct / stat.total * 100:.1f}" if stat.total else ""
+            valid_pct = f"{stat.valid / stat.total * 100:.1f}" if stat.total else ""
+            writer.writerow(
+                [
+                    stat.note,
+                    stat.total,
+                    stat.correct,
+                    correct_pct,
+                    stat.valid,
+                    valid_pct,
+                    "" if stat.p50 is None else f"{stat.p50:.0f}",
+                    "" if stat.p95 is None else f"{stat.p95:.0f}",
+                ]
+            )
+
+
 def format_ratio(count: int, total: int) -> str:
     return f"{count}/{total} ({count / total * 100:.1f}%)" if total else "0/0"
 
@@ -164,7 +332,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dir", required=True, type=Path, help="thư mục ảnh có labels.csv (filename,plate,note)")
     parser.add_argument("--url", default="http://localhost:8001", help="địa chỉ dịch vụ ALPR")
-    parser.add_argument("--csv", type=Path, default=None, help="ghi kết quả từng ảnh ra file CSV")
+    parser.add_argument(
+        "--csv",
+        type=Path,
+        default=Path("results/alpr_bench.csv"),
+        help="ghi kết quả từng ảnh ra file CSV (đường dẫn tính từ thư mục đang chạy)",
+    )
+    parser.add_argument(
+        "--summary",
+        type=Path,
+        default=Path("results/alpr_summary.csv"),
+        help="ghi bảng tổng hợp theo nhóm note ra file CSV",
+    )
     parser.add_argument("--timeout", type=float, default=30.0, help="timeout mỗi request (giây)")
     args = parser.parse_args(argv)
 
@@ -184,13 +363,25 @@ def main(argv: list[str] | None = None) -> int:
         image_path = directory / row.filename
         if not image_path.is_file():
             outcomes.append(
-                Outcome(row.filename, row.expected, None, False, 0.0, None, "", False, error="không thấy file ảnh")
+                Outcome(
+                    row.filename,
+                    row.expected,
+                    None,
+                    False,
+                    0.0,
+                    None,
+                    "",
+                    False,
+                    error="không thấy file ảnh",
+                    note=row.note,
+                )
             )
             print(f"[{index}/{len(rows)}] {row.filename}: THIẾU FILE", flush=True)
             continue
 
         outcome = call_recognize(session, args.url, image_path, args.timeout)
         outcome.expected = row.expected
+        outcome.note = row.note
         outcome.match = outcome.error == "" and is_match(row.expected, outcome.got)
         outcomes.append(outcome)
         status = "đúng" if outcome.match else "SAI"
@@ -239,26 +430,26 @@ def main(argv: list[str] | None = None) -> int:
         print("\nKhông có ảnh đọc sai.")
     print("=" * 62)
 
+    stats = group_stats(outcomes)
+    print("\nKết quả theo nhóm note")
+    print_group_markdown(stats, outcomes)
+
+    print("\nNhầm lẫn ký tự hay gặp (ký tự đúng -> ký tự đọc sai)")
+    confusions = confusion_stats(outcomes)
+    if confusions:
+        print("| Đúng | Đọc sai | Số lần |")
+        print("|---|---:|---:|")
+        for expected_char, got_char, count in confusions:
+            print(f"| {expected_char} | {got_char} | {count} |")
+    else:
+        print("Không có cặp nhầm lẫn nào (không có ảnh đọc sai kèm biển đọc được).")
+
     if args.csv:
-        args.csv.parent.mkdir(parents=True, exist_ok=True)
-        with args.csv.open("w", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["filename", "expected", "got", "match", "valid", "confidence", "ms", "raw", "error"])
-            for item in outcomes:
-                writer.writerow(
-                    [
-                        item.filename,
-                        item.expected or "",
-                        item.got or "",
-                        "1" if item.match else "0",
-                        "1" if item.valid else "0",
-                        f"{item.confidence:.3f}",
-                        "" if item.ms is None else item.ms,
-                        item.raw,
-                        item.error,
-                    ]
-                )
-        print(f"Đã ghi kết quả từng ảnh: {args.csv}")
+        write_bench_csv(args.csv, outcomes)
+        print(f"\nĐã ghi kết quả từng ảnh: {args.csv}")
+    if args.summary:
+        write_summary_csv(args.summary, stats)
+        print(f"Đã ghi tổng hợp theo nhóm: {args.summary}")
 
     return 0
 
