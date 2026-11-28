@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.responses import JSONResponse
 
 from .config import Settings, load_settings
 from .detector import Detector, Region, build_detector
@@ -114,6 +115,16 @@ def get_pipeline() -> Pipeline:
     if pipeline is None:  # chưa startup xong
         raise HTTPException(status_code=503, detail="ALPR đang khởi động")
     return pipeline
+
+
+@app.get("/health")
+def health() -> JSONResponse:
+    """200 khi pipeline đã nạp model xong; 503 trong lúc warmup (dùng cho healthcheck)."""
+    ready = pipeline is not None
+    return JSONResponse(
+        {"status": "ok" if ready else "error", "ready": ready},
+        status_code=200 if ready else 503,
+    )
 
 
 @app.post("/recognize")

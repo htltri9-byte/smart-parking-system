@@ -164,7 +164,7 @@ Chi tiết trong [AGENTS.md](AGENTS.md). Tóm tắt:
 | 4. Luồng cổng | 5–6 | Backend điều phối: nhận `vehicle_detected` → `/capture` → ALPR → mở barrier → ghi phiên | Chạy trọn luồng với giả lập, rồi thiết bị thật | ⬜ |
 | 5. Web Portal | 6–7 | Lưới ô đỗ thời gian thực, lịch sử, tìm biển số, thống kê | Portal hiển thị đúng trạng thái realtime | ⬜ |
 | 6. AI dự báo | 8 | Dữ liệu mô phỏng, Random Forest, API dự báo, hiện lên portal | Dự báo trả về và hiển thị được | ⬜ |
-| 7. Đo đạc | 9 | Đo độ trễ cảm biến→barrier, độ chính xác ALPR, xuất CSV | Có CSV số liệu | ⬜ |
+| 7. Đo đạc | 9 | Đo độ trễ cảm biến→barrier, độ chính xác ALPR, xuất CSV | Có CSV số liệu | 🟡 `tools/measure_latency.py` (sim/live) và `tools/bench_alpr.py` đã có; cần đo trên phần cứng thật |
 | 8. Hoàn thiện | 10 | Healthcheck, restart policy, README, kịch bản demo | Demo chạy trọn | ⬜ |
 
 <details>
@@ -188,6 +188,7 @@ Chi tiết trong [AGENTS.md](AGENTS.md). Tóm tắt:
 
 - [Hợp đồng MQTT, CSDL, API](docs/CONTRACT.md)
 - [Quy trình làm việc với Git](docs/GIT_WORKFLOW.md)
+- [Script giả lập và đo đạc](tools/README.md)
 - [README backend](backend/README.md) · [README firmware gate_in](firmware/gate_in/README.md)
 
 ## Nhóm thực hiện

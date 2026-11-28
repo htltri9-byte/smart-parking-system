@@ -25,6 +25,7 @@ from sqlalchemy import func, select
 from .config import settings
 from .db import SessionLocal
 from .models import ParkingSession, PlateRead, Slot
+from .traces import Trace, recorder as trace_recorder
 
 log = logging.getLogger("gate")
 
@@ -123,7 +124,10 @@ class GateFlow:
         self._last_event[direction] = now
 
         ts = _ts_from_payload(payload)
+        # Ghi vết bất đồng bộ: mỗi mốc chỉ đọc perf_counter, không chạm CSDL.
+        trace = trace_recorder.begin(direction, payload)
         image = self._capture()
+        trace.mark_capture()
         plate: str | None = None
         confidence: float | None = None
         valid = False
@@ -131,6 +135,7 @@ class GateFlow:
 
         if image is not None:
             result = self._recognize(image)
+            trace.mark_alpr(result)
             if result is not None:
                 plate = result.get("plate")
                 confidence = result.get("confidence")
@@ -145,12 +150,15 @@ class GateFlow:
                     ms,
                 )
         else:
+            trace.notes.append("không lấy được ảnh từ capture-agent")
             log.warning("Không lấy được ảnh từ capture-agent (%s)", settings.capture_url)
 
         if direction == "in":
-            self._entry(plate, confidence, valid, ms, ts, image)
+            session_id = self._entry(plate, confidence, valid, ms, ts, image, trace)
         else:
-            self._exit(plate, confidence, valid, ms, ts, image)
+            session_id = self._exit(plate, confidence, valid, ms, ts, image, trace)
+        trace.session_id = session_id
+        trace_recorder.finish(trace)
 
     def _on_passed(self, direction: str) -> None:
         self._cancel_close(direction)
@@ -166,8 +174,10 @@ class GateFlow:
         ms: int | None,
         ts: datetime,
         image: bytes | None,
-    ) -> None:
+        trace: Trace,
+    ) -> int | None:
         readable = bool(plate) and valid
+        session_id: int | None = None
         lcd: list[str]
         if readable:
             image_path = self._save_image(image, plate, ts, "entry")
@@ -192,13 +202,15 @@ class GateFlow:
                     )
                 )
                 db.commit()
+                session_id = session.id
             lcd = [plate or "", f"Con trong: {free_before}"]
             log.info("Tạo phiên vào cho %s, còn %d ô trống", plate, free_before)
         else:
             lcd = ["Khong ro bien", "Lien he bao ve"]
             log.warning("Không đọc được biển hợp lệ ở cổng vào; mở barrier thủ công")
 
-        self._open(direction="in", lcd=lcd)
+        self._open(direction="in", lcd=lcd, trace=trace)
+        return session_id
 
     # ---- ra ----
     def _exit(
@@ -209,8 +221,10 @@ class GateFlow:
         ms: int | None,
         ts: datetime,
         image: bytes | None,
-    ) -> None:
+        trace: Trace,
+    ) -> int | None:
         readable = bool(plate) and valid
+        session_id: int | None = None
         image_path = self._save_image(image, plate, ts, "exit") if readable else None
 
         if readable:
@@ -224,6 +238,7 @@ class GateFlow:
                 if session is not None:
                     session.exit_time = ts
                     session.status = "exited"
+                    session_id = session.id
                     db.add(session)
                 db.add(
                     PlateRead(
@@ -240,16 +255,20 @@ class GateFlow:
                 log.info("Đóng phiên %s của %s", session.id, plate)
             else:
                 lcd = [plate or "", "Khong co phien"]
+                trace.notes.append("không có phiên đang gửi để đóng")
                 log.warning("Không tìm thấy phiên đang gửi cho biển %s", plate)
         else:
             lcd = ["Khong ro bien", "Lien he bao ve"]
             log.warning("Không đọc được biển hợp lệ ở cổng ra; mở barrier thủ công")
 
-        self._open(direction="out", lcd=lcd)
+        self._open(direction="out", lcd=lcd, trace=trace)
+        return session_id
 
     # ---- barrier ----
-    def _open(self, direction: str, lcd: list[str]) -> None:
+    def _open(self, direction: str, lcd: list[str], trace: Trace | None = None) -> None:
         self.bridge.publish(f"gate/{direction}/cmd", {"barrier": "open", "lcd": lcd})
+        if trace is not None:
+            trace.mark_cmd()  # mốc publish lệnh mở, lấy ngay sau khi publish
         self._cancel_close(direction)
         timer = threading.Timer(
             settings.gate_open_seconds,

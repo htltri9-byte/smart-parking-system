@@ -43,6 +43,28 @@ class ParkingSession(Base):
     entry_image: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
 
+class GateTrace(Base):
+    """Một lượt xe qua cổng, tách độ trễ theo chặng (giai đoạn 7).
+
+    Mốc thời gian là đồng hồ backend (xem `traces.py`); `alpr_ms` là thời gian
+    service ALPR tự báo, chỉ để tham khảo.
+    """
+
+    __tablename__ = "gate_traces"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    gate: Mapped[str] = mapped_column(String(5), index=True)  # in | out
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("sessions.id"), nullable=True)
+    t_event_recv: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    t_capture_done: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    t_alpr_done: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    t_cmd_published: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    t_ack_recv: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    alpr_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    note: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
 class PlateRead(Base):
     __tablename__ = "plate_reads"
 
